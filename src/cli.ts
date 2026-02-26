@@ -12,14 +12,18 @@ const VALID_HIDE_FIELDS = new Set<HiddenField>(['cost', 'diff', 'duration', 'mod
 const STDIN_TIMEOUT = 3000;
 const MAX_STDIN = 64 * 1024;
 
-function validateInput(raw: unknown): StatuslineInput | null {
-  if (typeof raw !== 'object' || raw === null) return null;
+function validateInput(raw: unknown): StatuslineInput {
+  const fallback: StatuslineInput = { context_window: { used_percentage: 0 } };
+  if (typeof raw !== 'object' || raw === null) return fallback;
   const obj = raw as Record<string, unknown>;
   const ctx = obj.context_window as Record<string, unknown> | undefined;
-  if (!ctx || typeof ctx.used_percentage !== 'number' || !Number.isFinite(ctx.used_percentage)) return null;
+  if (!ctx) return fallback;
+
+  const pct = typeof ctx.used_percentage === 'number' && Number.isFinite(ctx.used_percentage)
+    ? ctx.used_percentage : 0;
 
   const result: StatuslineInput = {
-    context_window: { used_percentage: ctx.used_percentage },
+    context_window: { used_percentage: pct },
   };
 
   if (typeof obj.cwd === 'string' && obj.cwd.length > 0) {
@@ -132,24 +136,16 @@ async function main(): Promise<void> {
   }
 
   const raw = await readStdin();
-  if (!raw.trim()) {
-    process.stderr.write('No input on stdin. Usage: echo \'{"context_window":{"used_percentage":50}}\' | claude-usage-line\n');
-    process.exit(1);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    process.stderr.write('Invalid JSON input\n');
-    process.exit(1);
+  let parsed: unknown = {};
+  if (raw.trim()) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // invalid JSON — use defaults
+    }
   }
 
   const input = validateInput(parsed);
-  if (!input) {
-    process.stderr.write('Invalid statusline input: context_window.used_percentage required\n');
-    process.exit(1);
-  }
 
   if (json) {
     process.stdout.write(JSON.stringify(buildJSONOutput(input, hide)) + '\n');
