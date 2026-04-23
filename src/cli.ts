@@ -12,6 +12,16 @@ const VALID_HIDE_FIELDS = new Set<HiddenField>(['cost', 'diff', 'duration', 'mod
 const STDIN_TIMEOUT = 3000;
 const MAX_STDIN = 64 * 1024;
 
+function parseBucket(raw: unknown): { used_percentage: number; resets_at: number } | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const b = raw as Record<string, unknown>;
+  const pct = typeof b.used_percentage === 'number' && Number.isFinite(b.used_percentage)
+    ? Math.max(0, Math.min(100, b.used_percentage)) : null;
+  const resets = typeof b.resets_at === 'number' && Number.isFinite(b.resets_at) ? b.resets_at : null;
+  if (pct === null || resets === null) return undefined;
+  return { used_percentage: pct, resets_at: resets };
+}
+
 function validateInput(raw: unknown): StatuslineInput {
   const fallback: StatuslineInput = { context_window: { used_percentage: 0 } };
   if (typeof raw !== 'object' || raw === null) return fallback;
@@ -44,6 +54,17 @@ function validateInput(raw: unknown): StatuslineInput {
     if (typeof cost.total_lines_removed === 'number') result.cost.total_lines_removed = cost.total_lines_removed;
     if (typeof cost.total_cost_usd === 'number') result.cost.total_cost_usd = cost.total_cost_usd;
     if (typeof cost.total_duration_ms === 'number') result.cost.total_duration_ms = cost.total_duration_ms;
+  }
+
+  const rl = obj.rate_limits as Record<string, unknown> | undefined;
+  if (rl && typeof rl === 'object') {
+    const fh = parseBucket(rl.five_hour);
+    const wk = parseBucket(rl.seven_day);
+    if (fh || wk) {
+      result.rate_limits = {};
+      if (fh) result.rate_limits.five_hour = fh;
+      if (wk) result.rate_limits.seven_day = wk;
+    }
   }
 
   return result;
