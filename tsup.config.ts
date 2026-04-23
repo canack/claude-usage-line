@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 const pkg = JSON.parse(readFileSync("./package.json", "utf-8"));
 
 export default defineConfig({
-  entry: ["src/cli.ts", "src/fetch-worker.ts"],
+  entry: ["src/cli.ts"],
   format: ["cjs"],
   target: "node18",
   platform: "node",

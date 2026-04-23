@@ -1,35 +1,22 @@
 import { GREEN, RED, YELLOW, BLUE, MAGENTA, CYAN, DIM, RST, dim } from './ansi.js';
 import { renderBar } from './bar.js';
-import { readCache, isCacheStale } from './cache.js';
 import { formatRemaining } from './time.js';
-import { spawnBackgroundFetch } from './usage-api.js';
 import { getGitBranch } from './git.js';
 import { homedir } from 'os';
 import { sep as pathSep } from 'path';
-import type { StatuslineInput, BarStyle, CachedUsage, JSONOutput, HiddenField } from './types.js';
+import type { StatuslineInput, BarStyle, JSONOutput, HiddenField, RateLimitBucket } from './types.js';
 
 interface ResolvedUsage {
   sesPct: number;
-  fhPct: number;
-  wkPct: number;
-  fhRemain: string;
-  wkRemain: string;
-  cached: CachedUsage | null;
+  fhBucket: RateLimitBucket | null;
+  wkBucket: RateLimitBucket | null;
 }
 
 function resolveUsage(input: StatuslineInput): ResolvedUsage {
-  const cached = readCache();
-  if (isCacheStale(cached)) {
-    spawnBackgroundFetch();
-  }
-
   return {
     sesPct: Math.floor(input.context_window.used_percentage ?? 0),
-    fhPct: Math.floor(cached?.five_hour?.utilization ?? 0),
-    wkPct: Math.floor(cached?.seven_day?.utilization ?? 0),
-    fhRemain: formatRemaining(cached?.five_hour?.resets_at),
-    wkRemain: formatRemaining(cached?.seven_day?.resets_at),
-    cached,
+    fhBucket: input.rate_limits?.five_hour ?? null,
+    wkBucket: input.rate_limits?.seven_day ?? null,
   };
 }
 
@@ -58,7 +45,7 @@ function hasExtendedInput(input: StatuslineInput): boolean {
   return !!(input.cwd || input.model);
 }
 
-function buildExtras(input: StatuslineInput, hide: Set<HiddenField>, sep: string): string[] {
+function buildExtras(input: StatuslineInput, hide: Set<HiddenField>): string[] {
   const parts: string[] = [];
   if (input.cost) {
     const { total_lines_added, total_lines_removed, total_cost_usd, total_duration_ms } = input.cost;
@@ -78,9 +65,12 @@ function buildExtras(input: StatuslineInput, hide: Set<HiddenField>, sep: string
 }
 
 function buildBarParts(style: BarStyle, usage: ResolvedUsage): string[] {
-  const { sesPct, fhPct, wkPct, fhRemain, wkRemain } = usage;
+  const fhPct = Math.floor(usage.fhBucket?.used_percentage ?? 0);
+  const wkPct = Math.floor(usage.wkBucket?.used_percentage ?? 0);
+  const fhRemain = formatRemaining(usage.fhBucket?.resets_at);
+  const wkRemain = formatRemaining(usage.wkBucket?.resets_at);
   return [
-    'Cx ' + renderBar(sesPct, MAGENTA, style),
+    'Cx ' + renderBar(usage.sesPct, MAGENTA, style),
     '5h ' + renderBar(fhPct, CYAN, style) + ' ' + DIM + CYAN + style.resetIcon + fhRemain + RST,
     '7d ' + renderBar(wkPct, GREEN, style) + ' ' + DIM + GREEN + style.resetIcon + wkRemain + RST,
   ];
@@ -88,7 +78,7 @@ function buildBarParts(style: BarStyle, usage: ResolvedUsage): string[] {
 
 function renderBarsLine(input: StatuslineInput, style: BarStyle, usage: ResolvedUsage, hide: Set<HiddenField>): string {
   const sep = ' ' + dim(style.separator) + ' ';
-  const extras = buildExtras(input, hide, sep);
+  const extras = buildExtras(input, hide);
   const bars = buildBarParts(style, usage).join(sep);
 
   if (extras.length === 0) return bars;
@@ -107,7 +97,6 @@ export function renderStatusline(input: StatuslineInput, style: BarStyle, hide: 
   const showBranch = !hide.has('branch') && !!input.cwd;
   const branch = showBranch ? getGitBranch(input.cwd!) : null;
 
-  // Line 1: cwd/branch + extras
   const line1Parts: string[] = [];
   if (showCwd) {
     let cwdPart = BLUE + shortenCwd(input.cwd!) + RST;
@@ -116,9 +105,8 @@ export function renderStatusline(input: StatuslineInput, style: BarStyle, hide: 
   } else if (branch) {
     line1Parts.push(GREEN + branch + RST);
   }
-  line1Parts.push(...buildExtras(input, hide, sep));
+  line1Parts.push(...buildExtras(input, hide));
 
-  // Line 2: model + bars
   const line2Parts: string[] = [];
   if (!hide.has('model') && input.model?.display_name) {
     line2Parts.push(MAGENTA + input.model.display_name + RST);
@@ -132,27 +120,29 @@ export function renderStatusline(input: StatuslineInput, style: BarStyle, hide: 
 }
 
 export function buildJSONOutput(input: StatuslineInput, hide: Set<HiddenField> = new Set()): JSONOutput {
-  const { sesPct, fhPct, wkPct, fhRemain, wkRemain, cached } = resolveUsage(input);
+  const usage = resolveUsage(input);
   const branch = !hide.has('branch') && input.cwd ? getGitBranch(input.cwd) : null;
+  const fhPct = Math.floor(usage.fhBucket?.used_percentage ?? 0);
+  const wkPct = Math.floor(usage.wkBucket?.used_percentage ?? 0);
 
   return {
     model: !hide.has('model') ? (input.model?.display_name ?? null) : null,
     cwd: !hide.has('cwd') ? (input.cwd ?? null) : null,
     git_branch: branch,
     session: {
-      utilization_pct: sesPct,
+      utilization_pct: usage.sesPct,
       resets_at: null,
       remaining: '--',
     },
     five_hour: {
       utilization_pct: fhPct,
-      resets_at: cached?.five_hour?.resets_at ?? null,
-      remaining: fhRemain,
+      resets_at: usage.fhBucket?.resets_at ?? null,
+      remaining: formatRemaining(usage.fhBucket?.resets_at),
     },
     seven_day: {
       utilization_pct: wkPct,
-      resets_at: cached?.seven_day?.resets_at ?? null,
-      remaining: wkRemain,
+      resets_at: usage.wkBucket?.resets_at ?? null,
+      remaining: formatRemaining(usage.wkBucket?.resets_at),
     },
     diff: {
       added: !hide.has('diff') ? (input.cost?.total_lines_added ?? 0) : 0,

@@ -1,5 +1,10 @@
 export type HiddenField = 'cost' | 'diff' | 'duration' | 'model' | 'cwd' | 'branch';
 
+export interface RateLimitBucket {
+  used_percentage: number;
+  resets_at: number;
+}
+
 export interface StatuslineInput {
   context_window: {
     used_percentage: number;
@@ -14,26 +19,18 @@ export interface StatuslineInput {
     total_cost_usd?: number;
     total_duration_ms?: number;
   };
+  rate_limits?: {
+    five_hour?: RateLimitBucket;
+    seven_day?: RateLimitBucket;
+  };
 }
 
 export interface BarStyle {
-  readonly name: string;
   readonly filled: string;
   readonly empty: string;
   readonly width: number;
   readonly separator: string;
   readonly resetIcon: string;
-}
-
-export interface RateLimitBucket {
-  utilization: number;
-  resets_at: string;
-}
-
-export interface CachedUsage {
-  five_hour: RateLimitBucket | null;
-  seven_day: RateLimitBucket | null;
-  fetched_at: number;
 }
 
 export interface JSONOutput {
@@ -47,12 +44,12 @@ export interface JSONOutput {
   };
   five_hour: {
     utilization_pct: number;
-    resets_at: string | null;
+    resets_at: number | null;
     remaining: string;
   };
   seven_day: {
     utilization_pct: number;
-    resets_at: string | null;
+    resets_at: number | null;
     remaining: string;
   };
   diff: {
