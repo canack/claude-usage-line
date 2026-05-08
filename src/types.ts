@@ -1,7 +1,15 @@
-export type HiddenField = 'cost' | 'diff' | 'duration' | 'model' | 'cwd' | 'branch';
+export type HiddenField = 'cost' | 'diff' | 'duration' | 'model' | 'cwd' | 'branch' | 'org';
 
 export interface RateLimitBucket {
   used_percentage: number;
+  resets_at: number;
+}
+
+export interface ExtraUsageBucket {
+  used_percentage: number;
+  used_credits_cents: number;
+  monthly_limit_cents: number;
+  currency: string;
   resets_at: number;
 }
 
@@ -23,6 +31,14 @@ export interface StatuslineInput {
     five_hour?: RateLimitBucket;
     seven_day?: RateLimitBucket;
   };
+  extra_usage?: ExtraUsageBucket;
+}
+
+export interface CachedUsage {
+  five_hour: RateLimitBucket | null;
+  seven_day: RateLimitBucket | null;
+  extra_usage: ExtraUsageBucket | null;
+  fetched_at: number;
 }
 
 export interface BarStyle {
@@ -49,6 +65,14 @@ export interface JSONOutput {
   };
   seven_day: {
     utilization_pct: number;
+    resets_at: number | null;
+    remaining: string;
+  };
+  org: {
+    utilization_pct: number;
+    used_usd: number | null;
+    limit_usd: number | null;
+    currency: string | null;
     resets_at: number | null;
     remaining: string;
   };

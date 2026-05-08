@@ -6,16 +6,23 @@
 
 <img width="663" height="141" alt="Screenshot 2026-03-29 at 20 19 21" src="https://github.com/user-attachments/assets/d78c061c-c263-4252-aed9-f1c4252cf94d" />
 
-Cross-platform Claude Code statusline — session context, 5-hour & 7-day rate limits, git branch, diff stats, cost, and duration. Zero runtime dependencies, no `jq` required, no credentials required.
+Cross-platform Claude Code statusline — session context, 5-hour & 7-day rate limits (Pro/Max) or **organization monthly cap (Enterprise)**, git branch, diff stats, cost, and duration. Zero runtime dependencies, no `jq` required.
 
-**Full output** (when Claude Code sends extended data):
+**Pro/Max output** (Claude Code sends `rate_limits` on stdin):
 
 ```
 ~/dev/project  main
 Opus 4.7 │ Cx █████░░░ 62% │ 5h ████░░░░ 48% ⟳3h28m │ 7d █████░░░ 63% ⟳22h30m │ +123 -45 │ $0.50 │ 12m
 ```
 
-**Minimal output** (backward compatible — only `context_window` provided):
+**Enterprise output** (no `rate_limits` on stdin → OAuth fallback fetches `extra_usage`):
+
+```
+~/dev/project  main
+Opus 4.7 │ Cx █████░░░ 62% │ Org █░░░░░░░░░░░░░░░ 7% $16/$200 ⟳23d15h
+```
+
+**Minimal output** (only `context_window` provided, no fallback data yet):
 
 ```
 Cx █████░░░ 62% │ 5h ░░░░░░░░ 0% ⟳-- │ 7d ░░░░░░░░ 0% ⟳--
@@ -24,9 +31,11 @@ Cx █████░░░ 62% │ 5h ░░░░░░░░ 0% ⟳-- │ 7d 
 ## Prerequisites
 
 - Node.js ≥ 18
-- Claude Code ≥ 2.1 (statusline JSON must include `rate_limits` for 5h/7d bars to show real data)
+- Claude Code ≥ 2.1
 
-No OAuth, no API keys, no credential storage. Rate-limit data is provided directly by Claude Code on stdin.
+For **Pro/Max** subscribers, `rate_limits` is provided directly by Claude Code on stdin — no OAuth, no API keys, no network calls.
+
+For **Enterprise** users, stdin doesn't include `rate_limits`, so the statusline falls back to a background OAuth call against the same endpoint Claude Code's own `/usage` view reads (`api.anthropic.com/api/oauth/usage`). The OAuth token is read from your existing Claude Code login (macOS keychain / `secret-tool` / Windows Credential Manager / `~/.claude/.credentials.json`). No API key needed; nothing new to configure. To opt out, set `CLAUDE_USAGE_LINE_NO_FETCH=1`.
 
 ## Quick Start
 
@@ -68,17 +77,27 @@ Claude Code                         claude-usage-line
     │    cwd                                │
     │    model.display_name                 │
     │    cost.*                             │
-    │    rate_limits.five_hour.*            │
-    │    rate_limits.seven_day.*            │
+    │    rate_limits.five_hour.*  (Pro/Max) │
+    │    rate_limits.seven_day.*  (Pro/Max) │
     ├──────────────────────────────────────▶│
     │                                       ├─▶ Detect git branch (cwd)
+    │                                       │
+    │       stdin lacks rate_limits?        │
+    │       (Enterprise plan path)          │
+    │       ┌───────────────────────────┐   │
+    │       │ Read disk cache           │   │
+    │       │ Spawn background fetch    │   │
+    │       │   GET /api/oauth/usage    │   │
+    │       │   → extra_usage bucket    │   │
+    │       │   → write cache (5min TTL)│   │
+    │       └───────────────────────────┘   │
     │                                       ├─▶ Render bars + metadata
     │                                       │
     │  stdout: ANSI statusline              │
     │◀──────────────────────────────────────┤
 ```
 
-Stateless, synchronous, no background processes, no disk cache.
+The OAuth fallback path activates only when stdin doesn't carry `rate_limits` — i.e. Pro/Max users on Claude Code 2.1+ never hit the API, while Enterprise users get the org-cap bar through a cached background fetch (60s TTL minimum, 5min default to avoid 429s).
 
 ### Supported stdin fields
 
@@ -98,7 +117,29 @@ Stateless, synchronous, no background processes, no disk cache.
 
 When `cwd` or `model` is present → 2-line output. Otherwise → single-line (backward compatible).
 
-`rate_limits` is populated by Claude Code for Claude.ai Pro/Max subscribers after the first API response of a session. When absent, 5h/7d bars render as `0%` with `⟳--`.
+`rate_limits` is populated by Claude Code for Claude.ai Pro/Max subscribers after the first API response of a session. When absent, the OAuth fallback path (Enterprise) takes over and renders the **Org** bar instead of `5h`/`7d`. If neither is available, the bars row collapses to just `Cx` until data arrives.
+
+### Enterprise: `extra_usage` (Org bar)
+
+The OAuth fallback writes an `extra_usage` block into the cache, sourced from `api.anthropic.com/api/oauth/usage`:
+
+| Field | Description |
+|-------|-------------|
+| `used_percentage` | 0–100, computed by Anthropic |
+| `used_credits_cents` | This month's spend, in cents |
+| `monthly_limit_cents` | Org-set per-user monthly cap, in cents |
+| `currency` | `USD`, `EUR`, etc. |
+| `resets_at` | First of next month, UTC, Unix epoch seconds |
+
+When `extra_usage` is present, the bar replaces 5h/7d:
+
+```
+Org ████████████████░░░░ 7% $16/$200 ⟳23d15h
+```
+
+Bar width is `clamp(16, 2 × style.width, 40)` (so `--style=block` gives a 20-wide bar). If `monthly_limit_cents === 0`, the org has no per-user cap — the bar renders empty with `$X / ∞`.
+
+**Threshold colors override `--org-color`** at high utilization: `≥50%` shifts to yellow, `≥80%` to red. So `--org-color gold` and `--org-color yellow` lose their distinct base color exactly at the points where the warning matters most — pick a base that contrasts with yellow (purple, teal, steel, blue, magenta, cyan, coral, green) for clearest signal.
 
 ## Bar Styles
 
@@ -136,6 +177,14 @@ echo '{"context_window":{"used_percentage":62}}' | npx claude-usage-line --json
   "session": { "utilization_pct": 62, "resets_at": null, "remaining": "--" },
   "five_hour": { "utilization_pct": 48, "resets_at": 1776945496, "remaining": "3h28m" },
   "seven_day": { "utilization_pct": 63, "resets_at": 1777014016, "remaining": "22h30m" },
+  "org": {
+    "utilization_pct": 7,
+    "used_usd": 15.83,
+    "limit_usd": 200,
+    "currency": "USD",
+    "resets_at": 1780272000,
+    "remaining": "23d15h"
+  },
   "diff": { "added": 0, "removed": 0 },
   "cost_usd": null,
   "duration_min": null
@@ -151,12 +200,18 @@ Usage: claude-usage-line [options]
        claude-usage-line setup
 
 Options:
-  --style <name>  Bar style (classic, dot, braille, block, ascii, square, pipe)
-  --hide <fields> Hide fields (comma-separated): cost,diff,duration,model,cwd,branch
-  --sep <name>    Separator style: bullet (default), pipe
-  --json          Output JSON
-  --help          Show help
-  --version       Show version
+  --style <name>      Bar style (classic, dot, braille, block, ascii, square, pipe)
+  --hide <fields>     Hide fields (comma-separated): cost,diff,duration,model,cwd,branch,org
+  --sep <name>        Separator style: bullet (default), pipe
+  --org-color <name>  Org bar color: purple (default), teal, steel, gold, coral,
+                      blue, magenta, cyan, yellow, green
+  --json              Output JSON
+  --help              Show help
+  --version           Show version
+
+Environment:
+  CLAUDE_USAGE_LINE_NO_FETCH=1   Disable OAuth fallback (skips Enterprise Org bar)
+  CLAUDE_CODE_OAUTH_TOKEN=<tok>  One-shot token override (consumed and unset)
 ```
 
 ### Hiding Fields
@@ -172,7 +227,7 @@ Use `--hide` to selectively hide parts of the output:
 }
 ```
 
-Available fields: `cost`, `diff`, `duration`, `model`, `cwd`, `branch`
+Available fields: `cost`, `diff`, `duration`, `model`, `cwd`, `branch`, `org`
 
 ## Development
 

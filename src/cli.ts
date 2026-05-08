@@ -5,9 +5,12 @@ process.stdout.on('error', (e: NodeJS.ErrnoException) => { if (e.code === 'EPIPE
 import { renderStatusline, buildJSONOutput } from './statusline.js';
 import { runSetup } from './setup.js';
 import { getStyle, styleNames, DEFAULT_STYLE } from './styles.js';
+import { readCache, isCacheStale } from './cache.js';
+import { spawnBackgroundFetch } from './usage-api.js';
+import { resolveOrgColor, orgColorNames, DEFAULT_ORG_COLOR_NAME } from './ansi.js';
 import type { StatuslineInput, HiddenField } from './types.js';
 
-const VALID_HIDE_FIELDS = new Set<HiddenField>(['cost', 'diff', 'duration', 'model', 'cwd', 'branch']);
+const VALID_HIDE_FIELDS = new Set<HiddenField>(['cost', 'diff', 'duration', 'model', 'cwd', 'branch', 'org']);
 
 const STDIN_TIMEOUT = 3000;
 const MAX_STDIN = 64 * 1024;
@@ -58,16 +61,37 @@ function validateInput(raw: unknown): StatuslineInput {
 
   const rl = obj.rate_limits as Record<string, unknown> | undefined;
   if (rl && typeof rl === 'object') {
+    result.rate_limits = {};
     const fh = parseBucket(rl.five_hour);
     const wk = parseBucket(rl.seven_day);
-    if (fh || wk) {
-      result.rate_limits = {};
-      if (fh) result.rate_limits.five_hour = fh;
-      if (wk) result.rate_limits.seven_day = wk;
-    }
+    if (fh) result.rate_limits.five_hour = fh;
+    if (wk) result.rate_limits.seven_day = wk;
   }
 
   return result;
+}
+
+function applyOAuthFallback(input: StatuslineInput): StatuslineInput {
+  if (input.rate_limits) return input;
+
+  const cached = readCache();
+
+  if (cached) {
+    if (cached.five_hour || cached.seven_day) {
+      input.rate_limits = {};
+      if (cached.five_hour) input.rate_limits.five_hour = cached.five_hour;
+      if (cached.seven_day) input.rate_limits.seven_day = cached.seven_day;
+    }
+    if (cached.extra_usage) {
+      input.extra_usage = cached.extra_usage;
+    }
+  }
+
+  if (process.env.CLAUDE_USAGE_LINE_NO_FETCH !== '1' && isCacheStale(cached)) {
+    spawnBackgroundFetch();
+  }
+
+  return input;
 }
 
 function parseHide(raw: string): Set<HiddenField> {
@@ -84,11 +108,12 @@ const SEPARATORS: Record<string, string> = {
   bullet: '•',
 };
 
-function parseFlags(args: string[]): { json: boolean; styleName: string; hide: Set<HiddenField>; sep: string | null } {
+function parseFlags(args: string[]): { json: boolean; styleName: string; hide: Set<HiddenField>; sep: string | null; orgColorName: string } {
   let json = false;
   let styleName = DEFAULT_STYLE;
   let hide = new Set<HiddenField>();
   let sep: string | null = null;
+  let orgColorName = DEFAULT_ORG_COLOR_NAME;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--json') {
@@ -105,9 +130,13 @@ function parseFlags(args: string[]): { json: boolean; styleName: string; hide: S
       sep = args[++i];
     } else if (arg.startsWith('--sep=')) {
       sep = arg.slice('--sep='.length);
+    } else if (arg === '--org-color' && i + 1 < args.length) {
+      orgColorName = args[++i];
+    } else if (arg.startsWith('--org-color=')) {
+      orgColorName = arg.slice('--org-color='.length);
     }
   }
-  return { json, styleName, hide, sep };
+  return { json, styleName, hide, sep, orgColorName };
 }
 
 async function readStdin(): Promise<string> {
@@ -137,12 +166,17 @@ async function main(): Promise<void> {
       'Usage: claude-usage-line [options]\n' +
       '       claude-usage-line setup\n\n' +
       'Options:\n' +
-      '  --style <name>  Bar style (classic, dot, braille, block, ascii, square, pipe)\n' +
-      '  --hide <fields> Hide fields: cost,diff,duration,model,cwd,branch\n' +
-      '  --sep <name>    Separator style: bullet (default), pipe\n' +
-      '  --json          Output JSON\n' +
-      '  --help          Show this help\n' +
-      '  --version       Show version\n'
+      '  --style <name>      Bar style (classic, dot, braille, block, ascii, square, pipe)\n' +
+      '  --hide <fields>     Hide fields: cost,diff,duration,model,cwd,branch,org\n' +
+      '  --sep <name>        Separator style: bullet (default), pipe\n' +
+      '  --org-color <name>  Org bar color (purple [default], teal, steel, gold, coral,\n' +
+      '                      blue, magenta, cyan, yellow, green)\n' +
+      '  --json              Output JSON\n' +
+      '  --help              Show this help\n' +
+      '  --version           Show version\n\n' +
+      'Environment:\n' +
+      '  CLAUDE_USAGE_LINE_NO_FETCH=1   Disable OAuth fetch fallback (Enterprise users)\n' +
+      '  CLAUDE_CODE_OAUTH_TOKEN=<tok>  Override token source (one-shot)\n'
     );
     process.exit(0);
   }
@@ -157,7 +191,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { json, styleName, hide, sep } = parseFlags(args);
+  const { json, styleName, hide, sep, orgColorName } = parseFlags(args);
 
   if (!json) {
     const style = getStyle(styleName);
@@ -165,6 +199,12 @@ async function main(): Promise<void> {
       process.stderr.write(`Unknown style: ${styleName}\nAvailable: ${styleNames().join(', ')}\n`);
       process.exit(1);
     }
+  }
+
+  const orgColor = resolveOrgColor(orgColorName);
+  if (!orgColor) {
+    process.stderr.write(`Unknown org-color: ${orgColorName}\nAvailable: ${orgColorNames().join(', ')}\n`);
+    process.exit(1);
   }
 
   const raw = await readStdin();
@@ -177,7 +217,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const input = validateInput(parsed);
+  const input = applyOAuthFallback(validateInput(parsed));
 
   if (json) {
     process.stdout.write(JSON.stringify(buildJSONOutput(input, hide)) + '\n');
@@ -187,7 +227,7 @@ async function main(): Promise<void> {
       const resolved = SEPARATORS[sep] ?? sep;
       style = { ...style, separator: resolved };
     }
-    process.stdout.write(renderStatusline(input, style, hide) + '\n');
+    process.stdout.write(renderStatusline(input, style, hide, orgColor) + '\n');
   }
 }
 
