@@ -163,6 +163,32 @@ Each bar changes color at thresholds:
 
 Additional: model name=magenta, cwd=blue, branch=green, additions=green, removals=red, cost=yellow
 
+Organization bar base color can be changed with `--org-color`:
+
+| Name | Description |
+|------|-------------|
+| `purple` | Default |
+| `teal` | Muted blue-green |
+| `steel` | Muted blue-gray |
+| `gold` | Warm yellow-gold |
+| `coral` | Warm pink-red |
+| `blue` | Bright blue |
+| `magenta` | Bright magenta |
+| `cyan` | Bright cyan |
+| `yellow` | Standard terminal yellow |
+| `green` | Standard terminal green |
+
+Example:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "npx claude-usage-line --org-color teal"
+  }
+}
+```
+
 ## JSON Output
 
 ```bash
